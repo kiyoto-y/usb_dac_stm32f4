@@ -108,7 +108,9 @@ int main(void)
 		/* DACﾁｯﾌﾟﾘｾｯﾄ解除 */
 		HAL_GPIO_WritePin(GPIOD, Audio_RST_Pin, GPIO_PIN_SET);
 		
-		/* @memo I2Sのﾍﾟﾘﾌｪﾗﾙが生きている間(MCKOEがｲﾈｰﾌﾞﾙされている間)はMCLKが出っぱなしとなる */
+		/* @warning この段階ではMCLKが出力されていない */
+		/*          SPI IPでのMCLK出力はI2S転送動作中のみ出力される模様 */
+		/*          ﾘｾｯﾄ解除状態でのｸﾛｯｸ停止が明示的に禁止されているDAC(ﾀﾞｲﾅﾐｯｸ回路実装など)を使う場合は注意すること */
 		
 //		HAL_GPIO_TogglePin(GPIOD, LD3_Pin);
 		
@@ -426,6 +428,39 @@ void assert_failed(uint8_t* file, uint32_t line)
 }
 
 #endif
+
+/* for Debug */
+/* 死んだ要因解析用 */
+void NMI_Handler(){
+	for (;;);
+}
+void HardFault_Handler(){
+	for (;;);
+}
+
+void MemManage_Handler(){
+	for (;;);
+}
+
+void BusFault_Handler(){
+	for (;;);
+}
+
+void UsageFault_Handler(){
+	for (;;);
+}
+
+void SVC_Handler(){
+	for (;;);
+}
+
+void DebugMon_Handler(){
+	for (;;);
+}
+
+void PendSV_Handler(){
+	for (;;);
+}
 
 /**
   * @}

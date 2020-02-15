@@ -112,12 +112,14 @@
     
 /* Number of sub-packets in the audio transfer buffer. You can modify this value but always make sure
   that it is an even number and higher than 3 */
-#define AUDIO_OUT_PACKET_NUM                          80
-/* Total size of the audio transfer buffer */
-#define AUDIO_TOTAL_BUF_SIZE                          ((uint32_t)(8 * 256))//((uint32_t)((uint32_t)(((USBD_AUDIO_FREQ * 4 * 2) /1000)) * AUDIO_OUT_PACKET_NUM))
+//#define AUDIO_OUT_PACKET_NUM                          80
 
 /* ﾌｨｰﾄﾞﾊﾞｯｸ値の更新間隔(送信回数単位) */
 #define AUDIO_FEEDBACK_COUNT						  (32)	/* M$の資料によると推奨値 */
+
+/* Total size of the audio transfer buffer */
+/* @memo 最低でもﾌｨｰﾄﾞﾊﾞｯｸ値の送信間隔分の倍は欲しい */
+#define AUDIO_TOTAL_BUF_SIZE                          ((uint32_t)(8 * 256))//((uint32_t)((uint32_t)((USBD_AUDIO_FREQ * AUDIO_FEEDBACK_COUNT * 2) / 1000) * 4 * 2))
 
 
     /* Audio Commands enumeration */
@@ -160,11 +162,10 @@ USBD_AUDIO_ControlTypeDef;
 
 typedef struct
 {
-  __IO uint32_t             alt_setting; 
-  uint8_t                   buffer[AUDIO_OUT_PACKET];	/* @todo 受信可能な最大ｻｲｽﾞとする */
+  __IO uint32_t             alt_setting;                /* 現在選択されているI/F。0で"0帯域"(つまり、再生停止) */
+  uint8_t                   buffer[AUDIO_OUT_PACKET];	/* ｽﾄﾘｰﾑ用ｴﾝﾄﾞﾎﾟｲﾝﾄの送信ﾊﾞｯﾌｧ */
   
-  uint32_t                  feedback_val;				/* 現在のﾌｨｰﾄﾞﾊﾞｯｸ送信値 */
-  uint32_t                  upd_feedback_cnt;			/* ﾌｨｰﾄﾞﾊﾞｯｸ値更新までの残ｶｳﾝﾄ */
+  uint32_t                  feedback_val;				/* 現在のﾌｨｰﾄﾞﾊﾞｯｸ送信値。ﾌｫｰﾏｯﾄはUSB 2.0規格にあるFull speed endpoint用の値(3ﾊﾞｲﾄ 10.14形式)。 */
   
   int16_t                   vol;
   uint8_t                   mute;

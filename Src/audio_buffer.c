@@ -19,21 +19,34 @@ struct {
 	unsigned int wp;
 } audio_buffer __attribute__ ((aligned(128)));
 
-/* ﾌｫｰﾏｯﾄﾊﾟﾗﾒﾀ(@memo ﾊﾞｯﾌｧ上のﾌﾚｰﾑ長は8ﾊﾞｲﾄ…32bitｽﾃﾚｵ…固定) */
-volatile int audio_buffer_srate = 0;		/* ｻﾝﾌﾟﾘﾝｸﾞﾚｰﾄ */
+/* @memo ﾊﾞｯﾌｧ上のﾌﾚｰﾑ長は8ﾊﾞｲﾄ…32bitｽﾃﾚｵ…固定 */
 
 /* ﾊﾞｯﾌｧとは別に、ﾊﾞｯﾌｧへのﾃﾞｰﾀ流入出数を管理するｶｳﾝﾀ */
 volatile signed int audio_buffer_count = 0;			/* in/out両方で更新する値 */
-volatile signed int audio_buffer_count_fixed = 0;	/* out側だけで更新する値(out更新時に上記値をｺﾋﾟｰ) */
+volatile signed int audio_buffer_count_fixed = 0;	/* out側だけで更新する値(out更新時に上記値をｺﾋﾟｰ)。ﾊﾞｯﾌｧ残数のﾌｨｰﾄﾞﾊﾞｯｸ通知算出用 */
+volatile signed int audio_buffer_count_valid = 0;	/* audio_buffer_count同様だが、audio_buffer_fill_next_ip()での投入分が反映されない。その他の方法を用いて投入すると、あちら側と同値に修正される */
+
 
 /*@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@*/
 /*
 	初期化
 */
 void audio_buffer_init(){
+	
+	int size = sizeof(audio_buffer.data);
+	int *p = (int *)audio_buffer.data;
+	
 	audio_buffer.wp = 0;
 	audio_buffer_count = 0;
-	audio_buffer_count_fixed = 0;
+	audio_buffer_count_valid = 0;
+	
+	/* ｲﾝｼﾞｹｰﾀ更新 */
+	(void)audio_buffer_read(0, 0);
+	
+	/* 初回のﾌｨｰﾄﾞﾊﾞｯｸ値通知対策(再生が始まるまでは制御目標通りであることにする) */
+	audio_buffer_count_fixed = (AUDIO_BUFFER_SIZE / 4);
+	
+	/* @memo ﾊﾞｯﾌｧの初期化は行わない。実際の再生開始までに呼出元でﾃﾞｰﾀ補充を行うこと */
 }
 
 /*@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@*/
@@ -78,16 +91,19 @@ void audio_buffer_feed(unsigned char *buf, int size){
 	}while (size -= 8);
 	
 	audio_buffer_count += size_org;
-	
+	audio_buffer_count_valid = audio_buffer_count;	/* 同期 */
 }
 
 /*@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@*/
 /*
 	ﾊﾞｯﾌｧﾌｨﾙ
 	
+	valid != 0: 供給ﾃﾞｰﾀを有効ﾃﾞｰﾀにしたい場合
+	valid == 0: 供給ﾃﾞｰﾀを無効ﾃﾞｰﾀにしたい場合(DMA停止時の零ﾌｨﾙを想定)
+	
 	@warning sizeは必ずﾌﾚｰﾑ長の整数倍。0は不可
 */
-void audio_buffer_fill(int val, int size){
+void audio_buffer_fill(int val, int size, int valid){
 	
 	int i = audio_buffer.wp;
 	const int size_org = size;
@@ -105,6 +121,7 @@ void audio_buffer_fill(int val, int size){
 	}while (size -= 4);
 	
 	audio_buffer_count += size_org;
+	if (valid) audio_buffer_count_valid = audio_buffer_count;	/* 同期 */
 }
 
 /*@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@*/
@@ -114,6 +131,7 @@ void audio_buffer_fill(int val, int size){
 	中間 / 末尾 == DMA転送で割り込みがかかる地点を想定。
 	
 	@warning sizeは必ずﾌﾚｰﾑ長の整数倍。0は不可
+	@warning audio_buffer_count_validは更新されない(DMA停止時のｵｰﾊﾞﾗﾝｴﾘｱを予めﾌｨﾙしておく目的の為)
 */
 void audio_buffer_fill_next_ip(int val){
 	
@@ -139,6 +157,14 @@ void audio_buffer_fill_next_ip(int val){
 
 /*@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@*/
 /*
+	ﾊﾞｯﾌｧの先頭ｱﾄﾞﾚｽ取得
+*/
+unsigned char *audio_buffer_getptr(){
+	return &(audio_buffer.data[0]);
+}
+
+/*@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@*/
+/*
 	ﾊﾞｯﾌｧからの読み出し(指定ｵﾌｾｯﾄのﾊﾞｯﾌｧｱﾄﾞﾚｽ取得)
 	
 	@memo ﾌｨｰﾄﾞﾊﾞｯｸ値算出用の残量計が更新される
@@ -147,13 +173,16 @@ void audio_buffer_fill_next_ip(int val){
 	
 	@warning sizeは必ずﾌﾚｰﾑ長の整数倍。0許容
 */
-unsigned char *audio_buffer_getptr(int ofs, int size){
+unsigned char *audio_buffer_read(int ofs, int size){
 	
 	if (ofs < sizeof(audio_buffer.data)){
 		
 		audio_buffer_count -= size;
+		audio_buffer_count_valid -= size;
 		
+#if 0
 		/* ｵｰﾊﾞ / ｱﾝﾀﾞｰﾌﾛｰ対策 */
+		/* つまり、現象が発生した際は、周囲のﾃﾞｰﾀを破壊してでも早期収束を図る */
 		while (audio_buffer_count >= (signed int)AUDIO_BUFFER_SIZE){
 //			HAL_GPIO_TogglePin(GPIOD, LD5_Pin);
 			audio_buffer_count -= AUDIO_BUFFER_SIZE;
@@ -162,11 +191,16 @@ unsigned char *audio_buffer_getptr(int ofs, int size){
 //			HAL_GPIO_TogglePin(GPIOD, LD4_Pin);
 			audio_buffer_count += AUDIO_BUFFER_SIZE;
 		}
+#endif
+		/* ｵｰﾊﾞ / ｱﾝﾀﾞｰﾗﾝﾁｪｯｸ */
+		HAL_GPIO_WritePin(GPIOD, LD4_Pin, (audio_buffer_count < 0) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+		HAL_GPIO_WritePin(GPIOD, LD5_Pin, (audio_buffer_count > (signed int)AUDIO_BUFFER_SIZE) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+		
 		audio_buffer_count_fixed = audio_buffer_count;
 		
 		/* ﾊﾞｯﾌｧ残数を表示(ﾌｨｰﾄﾞﾊﾞｯｸによって左右均等に点くような状態が好ましい) */
-		HAL_GPIO_WritePin(GPIOD, LD4_Pin, (audio_buffer_count_fixed <= (signed int)(AUDIO_BUFFER_SIZE / 2)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-		HAL_GPIO_WritePin(GPIOD, LD5_Pin, (audio_buffer_count_fixed >= (signed int)(AUDIO_BUFFER_SIZE / 2)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+//		HAL_GPIO_WritePin(GPIOD, LD4_Pin, (audio_buffer_count_fixed <= (signed int)(AUDIO_BUFFER_SIZE / 4)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+//		HAL_GPIO_WritePin(GPIOD, LD5_Pin, (audio_buffer_count_fixed >= (signed int)(AUDIO_BUFFER_SIZE / 4)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 		
 		return &(audio_buffer.data[ofs]);
 		
@@ -177,22 +211,16 @@ unsigned char *audio_buffer_getptr(int ofs, int size){
 
 /*@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@*/
 /*
-	現在のﾌｨｰﾄﾞﾊﾞｯｸ値を取得
+	ﾊﾞｯﾌｧへの供給ｻｲｽﾞを調整する為のﾌｨｰﾄﾞﾊﾞｯｸ値を取得
 	
-	ﾊﾞｯﾌｧ残量から算出されたﾌｨｰﾄﾞﾊﾞｯｸ値を返す。
-	ﾌｫｰﾏｯﾄはUSB 2.0規格にあるFull speed endpoint用の値(10.14形式)。
+	値は、制御目標となるﾊﾞｯﾌｧ残量との差[ｻﾝﾌﾟﾙ数単位]。
+	目標値 > 残 → 正(つまり、ﾊﾞｯﾌｧ残を増やしたい)
+	目標値 < 残 → 負(つまり、ﾊﾞｯﾌｧ残を減らしたい)
 */
-unsigned int audio_buffer_getfeedback(){
+signed int audio_buffer_getfeedback(){
 	
-	int diff;
-	
-	/* (buf残 > (AUDIO_BUFFER_SIZE / 2)) → 要求量が小さくなる方向 */
-	/* (buf残 < (AUDIO_BUFFER_SIZE / 2)) → 要求量が大きくなる方向 */
-	diff = ((signed int)(AUDIO_BUFFER_SIZE / 2) - audio_buffer_count_fixed);
-	diff /= 8;						/* ﾊﾞｲﾄ単位→ｻﾝﾌﾟﾙ数単位に */
-	diff <<= 14;					/* 整数部のLSB揃え */
-	diff /= AUDIO_BUFFER_FDB_RATE;	/* 1ms辺りの値に変換 */
-	
-	/* 24bit LE MSB詰めにして返す(整数部が最上位18bitで、最上位8bitは送信されない。つまり小数部は14bit) */
-	return diff + (((audio_buffer_srate << 10) / 1000) << 4);
+	/* @memo 制御目標は、DMA半ﾊﾞｯﾌｧ転送割り込み後にﾃﾞｰﾀ残数が1/4ﾊﾞｯﾌｧ分ある状態 */
+	/* (buf残 > (AUDIO_BUFFER_SIZE / 4)) → 要求量が小さくなる方向 */
+	/* (buf残 < (AUDIO_BUFFER_SIZE / 4)) → 要求量が大きくなる方向 */
+	return ((signed int)(AUDIO_BUFFER_SIZE / 4) - audio_buffer_count_fixed) / AUDIO_BUFFER_FRAMESIZE;
 }

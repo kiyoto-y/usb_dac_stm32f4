@@ -358,6 +358,30 @@ __ALIGN_BEGIN static uint8_t USBD_AUDIO_DeviceQualifierDesc[USB_LEN_DEV_QUALIFIE
   */ 
 
 /**
+  * @brief  AUDIO_UpdateFeedback
+  *         ﾌｨｰﾄﾞﾊﾞｯｸ値更新
+  * @param  pdev: device instance
+  */
+static void AUDIO_UpdateFeedback(USBD_HandleTypeDef *pdev){
+	
+	USBD_AUDIO_HandleTypeDef *haudio = (USBD_AUDIO_HandleTypeDef*)pdev->pClassData;
+	
+	extern signed int audio_buffer_getfeedback();
+	
+	/* ﾌｨｰﾄﾞﾊﾞｯｸ値更新 */
+	int diff = audio_buffer_getfeedback();
+	
+	diff <<= 14;	/* 整数部のLSB揃え */
+	diff /= 1000;	/* 1msあたりの値に変換 */
+//	diff /= AUDIO_FEEDBACK_COUNT;	/* 次のﾌｨｰﾄﾞﾊﾞｯｸ値通知までの間に誤差を相殺させる */
+	
+	/* 最上位 8bit: 未使用 */
+	/* 次の  10bit: 整数部 */
+	/* 最下位14bit: 小数部 */
+	haudio->feedback_val = diff + (((USBD_AUDIO_FREQ << 10) / 1000) << 4);
+}
+
+/**
   * @brief  USBD_AUDIO_Init
   *         Initialize the AUDIO interface
   * @param  pdev: device instance
@@ -387,7 +411,6 @@ static uint8_t  USBD_AUDIO_Init (USBD_HandleTypeDef *pdev,
     haudio = (USBD_AUDIO_HandleTypeDef*) pdev->pClassData;
     haudio->alt_setting = 0;
     haudio->feedback_val = (USBD_AUDIO_FREQ << 14) / 1000;	/* @todo 周波数選択時に初期化 */
-    haudio->upd_feedback_cnt = AUDIO_FEEDBACK_COUNT;
     
     haudio->mute = 0;
     haudio->vol = 0;
@@ -420,9 +443,9 @@ static uint8_t  USBD_AUDIO_DeInit (USBD_HandleTypeDef *pdev,
                                  uint8_t cfgidx)
 {
   
-  /* Open EP OUT */
-  USBD_LL_CloseEP(pdev,
-              AUDIO_OUT_EP);
+  /* Close EP OUT */
+  USBD_LL_CloseEP(pdev, AUDIO_OUT_EP);
+  USBD_LL_CloseEP(pdev, AUDIO_FEEDBACK_EP);
 
   /* DeInit  physical Interface components */
   if(pdev->pClassData != NULL)
@@ -507,14 +530,15 @@ static uint8_t  USBD_AUDIO_Setup (USBD_HandleTypeDef *pdev,
         
         if (haudio->alt_setting == 0){
           /* 0帯域 … 停止を通知 */
-          ((USBD_AUDIO_ItfTypeDef *)pdev->pUserData)->AudioCmd(&haudio->buffer[0], 0, AUDIO_CMD_STOP);
+          /* @memo I2Sを停止しない運用。呼ばない */
+          //((USBD_AUDIO_ItfTypeDef *)pdev->pUserData)->AudioCmd(&haudio->buffer[0], 0, AUDIO_CMD_STOP);
         }else{
 		  haudio->feedback_val = (USBD_AUDIO_FREQ << 14) / 1000;
-		  haudio->upd_feedback_cnt = AUDIO_FEEDBACK_COUNT;
 		  
 		  /* 開始を通知 */
 		  /* @todo 周波数選択 */
-		  ((USBD_AUDIO_ItfTypeDef *)pdev->pUserData)->AudioCmd(&haudio->buffer[0], 0, AUDIO_CMD_START);
+          /* @memo I2Sを停止しない運用。あちらの初期化時に実行する為、呼ばない */
+		  //((USBD_AUDIO_ItfTypeDef *)pdev->pUserData)->AudioCmd(&haudio->buffer[0], 0, AUDIO_CMD_START);
 		}
       }
       else
@@ -561,10 +585,8 @@ static uint8_t  USBD_AUDIO_DataIn (USBD_HandleTypeDef *pdev,
 #if 1
 	if (epnum == (AUDIO_FEEDBACK_EP & 0x7F))
 	{
-		extern unsigned int audio_buffer_getfeedback();
 //		HAL_GPIO_TogglePin(GPIOD, LD3_Pin);
-		
-		haudio->feedback_val = audio_buffer_getfeedback();
+		AUDIO_UpdateFeedback(pdev);
 		USBD_LL_Transmit(pdev, AUDIO_FEEDBACK_EP, &haudio->feedback_val, 3);
 	}
 #endif
@@ -650,11 +672,10 @@ static uint8_t  USBD_AUDIO_IsoINIncomplete (USBD_HandleTypeDef *pdev, uint8_t ep
 //	if (epnum == (AUDIO_FEEDBACK_EP & 0x7F))	/* 適当な値が来るので無視 */
 	{
 		extern HAL_StatusTypeDef HAL_PCD_EP_CancelTransmit(PCD_HandleTypeDef *hpcd, uint8_t ep_addr);
-		extern unsigned int audio_buffer_getfeedback();
 		
 		/* 転送失敗 → Isochronous転送のEven / Odd設定が違う可能性 → 再度上書き */
 		HAL_PCD_EP_CancelTransmit(pdev->pData, AUDIO_FEEDBACK_EP);
-		haudio->feedback_val = audio_buffer_getfeedback();
+		AUDIO_UpdateFeedback(pdev);
 		USBD_LL_Transmit(pdev, AUDIO_FEEDBACK_EP, &haudio->feedback_val, 3);
 		
 //		HAL_GPIO_TogglePin(GPIOD, LD3_Pin);
@@ -683,9 +704,11 @@ static uint8_t  USBD_AUDIO_IsoOutIncomplete (USBD_HandleTypeDef *pdev, uint8_t e
 		
 		HAL_GPIO_TogglePin(GPIOD, LD6_Pin);
 		
-		/* @todo 再生中だった場合は、このﾌﾚｰﾑを0埋め扱いでﾄﾞﾛｯﾌﾟ */
-		((USBD_AUDIO_ItfTypeDef *)pdev->pUserData)->AudioCmd(&haudio->buffer[0], (haudio->feedback_val >> 14) * 8 , AUDIO_CMD_MISSING);
-		
+		/* このﾌﾚｰﾑで供給される予定だった分を零埋め */
+		/* @memo WASAPIの一時停止中など、正常動作時の再生中でもこのｲﾍﾞﾝﾄが発生する場面がある */
+		/* @memo このｲﾍﾞﾝﾄ発生時は通知ﾀｲﾐﾝｸﾞが乱れている可能性がある為、通常よりもﾌｨｰﾄﾞﾊﾞｯｸ値の反映を増やして早期収束を図る */
+		extern signed int audio_buffer_getfeedback();
+		((USBD_AUDIO_ItfTypeDef *)pdev->pUserData)->AudioCmd(&haudio->buffer[0], ((USBD_AUDIO_FREQ / 1000) + (audio_buffer_getfeedback() / AUDIO_FEEDBACK_COUNT)) * 8 , AUDIO_CMD_MISSING);
 	}
 	return USBD_OK;
 }

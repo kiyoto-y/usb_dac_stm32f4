@@ -903,7 +903,10 @@ HAL_StatusTypeDef HAL_I2S_DMAStop(I2S_HandleTypeDef *hi2s)
   {
     HAL_DMA_Abort(hi2s->hdmarx);
   }
-
+	/* 調査用 */
+	static int more_send_cnt;
+	more_send_cnt = 0;
+	
 	/* 転送完了を同期 */
 	if (I2S_WaitFlagStateUntilTimeout(hi2s, I2S_FLAG_TXE, RESET, -1) != HAL_OK){
 		return HAL_TIMEOUT;
@@ -911,6 +914,7 @@ HAL_StatusTypeDef HAL_I2S_DMAStop(I2S_HandleTypeDef *hi2s)
 	/* CHSIDEが反転するまでﾀﾞﾐｰ送信(ﾌﾚｰﾑ内の位相合わせ) */
 	for (int org = __HAL_I2S_GET_FLAG(hi2s, I2S_FLAG_CHSIDE); __HAL_I2S_GET_FLAG(hi2s, I2S_FLAG_CHSIDE) != org; ){
 		hi2s->Instance->DR = 0;
+		more_send_cnt++;
 		if (I2S_WaitFlagStateUntilTimeout(hi2s, I2S_FLAG_TXE, RESET, -1) != HAL_OK){
 			return HAL_TIMEOUT;
 		}
@@ -918,13 +922,17 @@ HAL_StatusTypeDef HAL_I2S_DMAStop(I2S_HandleTypeDef *hi2s)
 	/* 左送信状態になるまでﾀﾞﾐｰ送信(CH位相合わせ) */
 	for (; __HAL_I2S_GET_FLAG(hi2s, I2S_FLAG_CHSIDE) != RESET; ){
 		hi2s->Instance->DR = 0;
+		more_send_cnt++;
 		if (I2S_WaitFlagStateUntilTimeout(hi2s, I2S_FLAG_TXE, RESET, -1) != HAL_OK){
 			return HAL_TIMEOUT;
 		}
 	}
 	/* 転送完了を同期 */
-	if (I2S_WaitFlagStateUntilTimeout(hi2s, I2S_FLAG_BSY, SET, -1) != HAL_OK){
-		return HAL_TIMEOUT;
+	/* @memo ごく稀にBSYが立ちっぱなしになることがあるような??? */
+	/*       念のため、ここに嵌まったことがわかるようにしておく(500ms周期でLED点滅) */
+	while (I2S_WaitFlagStateUntilTimeout(hi2s, I2S_FLAG_BSY, SET, 500/* [ms] */) != HAL_OK){
+		HAL_GPIO_TogglePin(GPIOD, LD4_Pin);
+		HAL_GPIO_TogglePin(GPIOD, LD5_Pin);
 	}
 	
   /* Disable I2S peripheral */

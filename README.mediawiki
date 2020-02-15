@@ -6,11 +6,11 @@ This is a USB-DAC device firmware implementation for STM32F4 Discovery board, us
 == Features ==
 
 * UAC 1.0 compliant
+* Low latency (about 1.5ms)
 * Using "Asynchronous mode" isochronous transfer with feedback endpoint
 * Master volume control support (also available in WASAPI Exclusive mode)
 * Stream format supports only 44.1kHz 32bit Stereo PCM
 ** Due to limitation of STM32F4, the actual frame rate is 44108.07422Hz.
-
 
 == Toolchain ==
 
@@ -27,8 +27,6 @@ If you want to supply power from the micro-B connector, add a Schottky diode to 
 PA9 ---|>|--- 5V
 </pre>
 
-But the middleware seems not to suport reconnect... Therefore, you shoud not reconnect to the micro-B connector while keeping the mini-B(ST-LINK) power supply.
-
 
 == LED indicators ==
 
@@ -36,12 +34,14 @@ But the middleware seems not to suport reconnect... Therefore, you shoud not rec
 
 On lighting, it indicates the analog output is activate.
 
+
 === LD4(Green) / LD5(Red) ===
 
-These indicates the status of audio data buffer.
-When the LD4 is lighting, it indicates that the remaining number of the audio buffer is smaller than the buffer size / 2.
-When the LD5 is lighting, it indicates that the remaining number of the audio buffer is larger than the buffer size / 2.
-If feedback control is valid, LD4 and LD5 will turn off, or alternately flicker.
+These indicates the status of audio data buffer overrun / underrun. 
+When the LD4 is lighting, it indicates that an underrun has occured.
+When the LD5 is lighting, it indicates that an overrun has occured.
+If feedback control is valid, LD4 and LD5 will turn off.
+
 
 === LD6(Blue) ===
 
@@ -51,6 +51,4 @@ It blinks when isochronous transfer fails during the latest 1ms (stopping, or dr
 == License ==
 
 See LICENSE.TXT.
-
-
 

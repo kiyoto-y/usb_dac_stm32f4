@@ -1207,11 +1207,11 @@ HAL_StatusTypeDef HAL_PCD_EP_CancelTransmit(PCD_HandleTypeDef *hpcd, uint8_t ep_
 	
 	/* 一旦停止 */
 	USBx_INEP(ep->num)->DIEPCTL |= (USB_OTG_DIEPCTL_EPDIS | USB_OTG_DIEPCTL_SNAK);
-	while (USBx_INEP(ep->num)->DIEPCTL & USB_OTG_DIEPCTL_EPENA);
 	
-	/* FIFOｸﾘｱ */
+	/* FIFOｸﾘｱ(本当は停止完了を待ってからやるべきだが…) */
 	HAL_PCD_EP_Flush(hpcd, ep_addr);
 	
+	/* 停止が完了すると「ｴﾝﾄﾞﾎﾟｲﾝﾄﾃﾞｨｾｰﾌﾞﾙ割り込み」が来る。本来なら続きはそちら */
 	return HAL_OK;
 }
 
@@ -1229,10 +1229,7 @@ HAL_StatusTypeDef HAL_PCD_EP_CancelReceive(PCD_HandleTypeDef *hpcd, uint8_t ep_a
 	/* 一旦停止 */
 	USBx_OUTEP(ep->num)->DOEPCTL |= USB_OTG_DOEPCTL_EPDIS;
 	
-	/* ここで停止待ちすると抜けてこない(停止できてない?) */
-	/* なので、実際には次回以降の最初のOUT転送は失敗してるかも */
-//	while (USBx_OUTEP(ep->num)->DOEPCTL & USB_OTG_DOEPCTL_EPENA);
-	
+	/* 停止が完了すると「ｴﾝﾄﾞﾎﾟｲﾝﾄﾃﾞｨｾｰﾌﾞﾙ割り込み」が来る */
 	return HAL_OK;
 }
 

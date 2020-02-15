@@ -14,6 +14,7 @@
 #pragma once
 
 void cs43l22_set_vol(int vol);
-void cs43l22_init(int freq, int vol);
-void cs43l22_start(int freq, int vol);
+void cs43l22_set_mute(int mute);
+void cs43l22_init(int freq, int vol, int mute);
+void cs43l22_start(int freq, int vol, int mute);
 void cs43l22_stop();

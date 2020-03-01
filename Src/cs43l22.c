@@ -128,9 +128,10 @@ void cs43l22_start(int freq, int vol, int mute){
 	/* ﾊﾟﾜｰｵﾝ */
 	HAL_I2C_Master_Transmit(&hi2c1, CS43L22_CS_ID, (uint8_t []){CS43L22_REG_POW_CTL1, 0x9E}, 2, -1);
 	
-	/* @memo MCLKを停止していた場合、実際にﾍｯﾄﾞﾌｫﾝ端子から音が出力され始めるまで、かなり時間がかかる模様(聴感上100ms～程度?) */
+	/* @memo ﾊﾟﾜｰｵﾌ→ｵﾝ遷移後、実際にﾍｯﾄﾞﾌｫﾝ端子から音が出力され始めるまで、かなり時間がかかる模様(聴感上100ms～程度?) */
 	/*       ﾃﾞｰﾀｼｰﾄには"4.8 Initialization"に"The charge pump slowly powers up and charges the capacitors."とある */
 	/*       (具体的に書けやという気がしないでも無い。) */
+	/*       本当なら再生停止時は積極的に止めておくべきなのかもしれないが、ちょーっとこれじゃ使い物にならんなぁ…という印象。 */
 	
 	cs43l22_set_vol(vol);
 }

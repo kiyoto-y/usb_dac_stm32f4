@@ -530,15 +530,13 @@ static uint8_t  USBD_AUDIO_Setup (USBD_HandleTypeDef *pdev,
         
         if (haudio->alt_setting == 0){
           /* 0帯域 … 停止を通知 */
-          /* @memo I2Sを停止しない運用。呼ばない */
-          //((USBD_AUDIO_ItfTypeDef *)pdev->pUserData)->AudioCmd(&haudio->buffer[0], 0, AUDIO_CMD_STOP);
+          ((USBD_AUDIO_ItfTypeDef *)pdev->pUserData)->AudioCmd(&haudio->buffer[0], 0, AUDIO_CMD_STOP);
         }else{
 		  haudio->feedback_val = (USBD_AUDIO_FREQ << 14) / 1000;
 		  
 		  /* 開始を通知 */
 		  /* @todo 周波数選択 */
-          /* @memo I2Sを停止しない運用。あちらの初期化時に実行する為、呼ばない */
-		  //((USBD_AUDIO_ItfTypeDef *)pdev->pUserData)->AudioCmd(&haudio->buffer[0], 0, AUDIO_CMD_START);
+		  ((USBD_AUDIO_ItfTypeDef *)pdev->pUserData)->AudioCmd(&haudio->buffer[0], 0, AUDIO_CMD_START);
 		}
       }
       else

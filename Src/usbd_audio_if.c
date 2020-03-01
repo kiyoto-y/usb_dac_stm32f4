@@ -113,14 +113,20 @@ extern I2S_HandleTypeDef hi2s3;
 /* ﾃﾞｰﾀ供給制御(USB-Audio側からのﾃﾞｰﾀ供給を受けるかどうか) */
 volatile int feed_enable = 0;
 
-/* I2S側の再生制御用 */
-volatile int i2s_is_playing;
+/* I2S側の動作制御用 */
+volatile int i2s_dma_enable;
+volatile int analog_out_enable;
 volatile int8_t i2s_cmd_queue[4];	/* 停止/開始要求の実行ｷｭｰ(開始→停止 / 停止→開始等の操作を高速で行った場合に、ｴｯｼﾞ方向を正しく処理できるように) */
 #define I2S_OP_INIT				(0x01)		/* 初期化要求 */
-#define I2S_OP_FEED				(0x02)		/* ﾃﾞｰﾀ供給通知(初回から数えて半ﾊﾞｯﾌｧ分以上埋まったらDMAを始動する) */
-#define I2S_OP_STOP_REQ			(0x03)		/* 停止要求(初段) */
-#define I2S_OP_STOP_SYN			(0x04)		/* ↑を受けて、再生ﾊﾞｯﾌｧの残りを再生し終わるまで待機(半ﾊﾞｯﾌｧ分) */
-#define I2S_OP_STOP_DMA			(0x05)		/* ↑を受けて、実際にDMAを止めるよう要求 */
+#define I2S_OP_START_PLAY		(0x02)		/* 再生開始要求(ｱﾅﾛｸﾞ出力ON) */
+#define I2S_OP_FEED				(0x03)		/* ﾃﾞｰﾀ供給通知(初回から数えて半ﾊﾞｯﾌｧ分以上埋まったらI2S DMAを始動する) */
+#define I2S_OP_STOP_REQ			(0x04)		/* 各種停止要求(初段) */
+#define I2S_OP_STOP_SYN			(0x05)		/* ↑を受けて、再生ﾊﾞｯﾌｧの残りを再生し終わるまで待機(半ﾊﾞｯﾌｧ分) */
+#define I2S_OP_STOP				(0x06)		/* ↑を受けて、実際の停止動作(何を行うかはI2S_OP_STOP_F_～ﾋﾞｯﾄで指定) */
+#define I2S_OP_MASK_SEQ			(0x0F)		/* (ｼｰｹﾝｽ部抜き出し用のﾏｽｸ) */
+/* 停止動作定義 */
+#define I2S_OP_STOP_F_PLAY		(0x10)		/* ｱﾅﾛｸﾞ出力停止要求を示す */
+#define I2S_OP_STOP_F_DMA		(0x20)		/* I2S DMA停止要求を示す */
 volatile int i2s_cmd_queue_wp;
 volatile int i2s_cmd_queue_rp;
 
@@ -186,7 +192,8 @@ static int8_t AUDIO_Init_FS(uint32_t  AudioFreq, int16_t Volume, uint32_t option
 	audio_buffer_init();
 	
 	feed_enable = 0;
-	i2s_is_playing = 0;
+	analog_out_enable = 0;
+	i2s_dma_enable = 0;
 	i2s_cmd_queue_wp = 0;
 	i2s_cmd_queue_rp = 0;
 	((int *)(&i2s_cmd_queue))[0] = 0;
@@ -194,7 +201,8 @@ static int8_t AUDIO_Init_FS(uint32_t  AudioFreq, int16_t Volume, uint32_t option
 	mute_ctrl_value = 0;
 	
 	/* @memo I2Sを常に動作させておく運用。USB-Audioがｱｸﾃｨﾌﾞな間は常に動作させておく */
-	AUDIO_AudioCmd_FS(NULL, 0, AUDIO_CMD_START);
+	i2s_cmd_queue[i2s_cmd_queue_wp] = I2S_OP_INIT;
+	i2s_cmd_queue_wp = (i2s_cmd_queue_wp + 1) & 0x03;
 	
 	return (USBD_OK);
   /* USER CODE END 0 */
@@ -209,8 +217,9 @@ static int8_t AUDIO_Init_FS(uint32_t  AudioFreq, int16_t Volume, uint32_t option
 static int8_t AUDIO_DeInit_FS(uint32_t options)
 {
   /* USER CODE BEGIN 1 */ 
-	if (i2s_is_playing){
-		AUDIO_AudioCmd_FS(NULL, 0, AUDIO_CMD_STOP);
+	if (i2s_dma_enable){
+		i2s_cmd_queue[i2s_cmd_queue_wp] = I2S_OP_STOP_REQ | I2S_OP_STOP_F_PLAY | I2S_OP_STOP_F_DMA;
+		i2s_cmd_queue_wp = (i2s_cmd_queue_wp + 1) & 0x03;
 	}
 	return (USBD_OK);
   /* USER CODE END 1 */
@@ -234,12 +243,12 @@ static int8_t AUDIO_AudioCmd_FS (uint8_t* pbuf, uint32_t size, uint8_t cmd)
 	switch(cmd){
 		case AUDIO_CMD_START:{
 			
-			i2s_cmd_queue[i2s_cmd_queue_wp] = I2S_OP_INIT;
+			i2s_cmd_queue[i2s_cmd_queue_wp] = I2S_OP_START_PLAY;
 			i2s_cmd_queue_wp = (i2s_cmd_queue_wp + 1) & 0x03;
 			
-			if (i2s_cmd_queue[i2s_cmd_queue_rp/* @warning */] == I2S_OP_STOP_SYN){
+			if ((i2s_cmd_queue[i2s_cmd_queue_rp/* @warning */] & I2S_OP_MASK_SEQ) == I2S_OP_STOP_SYN){
 				/* 再生停止の為の同期中。つまり、再生停止→開始が高速で行われたﾊﾟﾀｰﾝ */
-				/* DMAを止めずにそのまま続けて再生する */
+				/* 止めずにそのまま続けて再生する */
 				i2s_cmd_queue_rp/* @warning */++;
 			}
 			break;
@@ -258,11 +267,11 @@ static int8_t AUDIO_AudioCmd_FS (uint8_t* pbuf, uint32_t size, uint8_t cmd)
 		}
 		case AUDIO_CMD_STOP:{
 			
-			i2s_cmd_queue[i2s_cmd_queue_wp] = I2S_OP_STOP_REQ;
+			i2s_cmd_queue[i2s_cmd_queue_wp] = I2S_OP_STOP_REQ | I2S_OP_STOP_F_PLAY;
 			i2s_cmd_queue_wp = (i2s_cmd_queue_wp + 1) & 0x03;
 			
-			/* @memo DMA停止はDMAの半ﾊﾞｯﾌｧ割り込みｴｯｼﾞで行う */
-			/*       それまでの間、AUDIO_CMD_MISSINGにて零ﾌｨﾙﾃﾞｰﾀが供給されることを期待している(DMA停止までに不正ﾃﾞｰﾀが出ないよう配慮) */
+			/* @memo 実際の停止処理はDMAの半ﾊﾞｯﾌｧ割り込みｴｯｼﾞで行う */
+			/*       それまでの間、AUDIO_CMD_MISSINGにて零ﾌｨﾙﾃﾞｰﾀが供給されることを期待している(停止までに不正ﾃﾞｰﾀが出ないよう配慮) */
 			break;
 		}
 		case AUDIO_CMD_MISSING:{
@@ -270,7 +279,7 @@ static int8_t AUDIO_AudioCmd_FS (uint8_t* pbuf, uint32_t size, uint8_t cmd)
 			if (feed_enable){
 				/* ﾎｽﾄ側からｽﾄﾘｰﾑが来なかった。零埋めで妥協 */
 				/* 停止動作を行っている最中の場合は、無効ﾃﾞｰﾀとして計上する(再生ﾃﾞｰﾀの残数に反映させない。DMA停止までの0ﾌｨﾙﾃﾞｰﾀ) */
-				int valid = ((i2s_cmd_queue_wp == i2s_cmd_queue_rp) || (i2s_cmd_queue[i2s_cmd_queue_rp] != I2S_OP_STOP_SYN && i2s_cmd_queue[i2s_cmd_queue_rp] != I2S_OP_STOP_DMA));
+				int valid = !((i2s_cmd_queue_wp != i2s_cmd_queue_rp) && (i2s_cmd_queue[i2s_cmd_queue_rp] & (I2S_OP_STOP_F_PLAY | I2S_OP_STOP_F_DMA)));
 				audio_buffer_fill(0, size, valid);
 				
 				/* ﾃﾞｰﾀが来たことを通知 */
@@ -364,14 +373,14 @@ void TransferComplete_CallBack_FS(void)
 	/* ﾊﾞｯﾌｧ残量更新 */
 	(void)audio_buffer_read(0, (AUDIO_BUFFER_SIZE / 2));
 	
-	if ((i2s_cmd_queue_wp != i2s_cmd_queue_rp) && i2s_cmd_queue[i2s_cmd_queue_rp] == I2S_OP_STOP_SYN){
+	if ((i2s_cmd_queue_wp != i2s_cmd_queue_rp) && (i2s_cmd_queue[i2s_cmd_queue_rp] & I2S_OP_MASK_SEQ) == I2S_OP_STOP_SYN){
 		/* ﾊﾞｯﾌｧ内の残ﾃﾞｰﾀも極力再生できるように、半ﾊﾞｯﾌｧ割り込みｴｯｼﾞで停止を受付 */
 		/* @warning 停止処理が完了するまで再生開始を割り込ませたくない。このため、rp位置への上書き扱いで進める */
 		extern volatile signed int audio_buffer_count_valid;
 		
 		/* 有効ﾃﾞｰﾀの消化が終わったことを確認したらDMA停止に進む */
 		if (audio_buffer_count_valid <= 0){
-			i2s_cmd_queue[i2s_cmd_queue_rp/* @warning */] = I2S_OP_STOP_DMA;
+			i2s_cmd_queue[i2s_cmd_queue_rp/* @warning */]++; // = I2S_OP_STOP;
 		}
 	}
 	
@@ -405,22 +414,41 @@ void AUDIO_main(){
 	extern volatile signed int audio_buffer_count;
 	
 	/**
+	  * @brief  ｱﾅﾛｸﾞ出力開始処理.
+	  * @param  None
+	  * @retval None
+	  */
+	void start_analog_out(){
+		
+		/* @warning 事前にI2S DMAを始動している必要がある */
+		
+		/* 表示反映(@memo ｱﾝﾌﾟの電源制御兼用も考慮: ちょっと早めに行う) */
+		HAL_GPIO_WritePin(GPIOD, LD3_Pin, GPIO_PIN_SET);
+		
+		/* DACﾐｭｰﾄ解除 */
+		cs43l22_set_mute(mute_ctrl_value);
+		
+	}
+	/**
 	  * @brief  I2S動作開始処理.
 	  * @param  None
 	  * @retval None
 	  */
 	void start_i2s(){
-		/* 表示反映(@memo ｱﾝﾌﾟの電源制御兼用も考慮: ちょっと早めに行う) */
-		HAL_GPIO_WritePin(GPIOD, LD3_Pin, GPIO_PIN_SET);
-		
 		/* I2S開始 */
 		/* @memo MCLK出力もこのﾀｲﾐﾝｸﾞで開始される */
 		error_code = HAL_I2S_Transmit_DMA(&hi2s3, (short *)audio_buffer_getptr(), (AUDIO_TOTAL_BUF_SIZE / 4)/* ｻﾌﾞﾌﾚｰﾑ単位なので */);
 		
-		/* DACﾐｭｰﾄ解除 */
-		cs43l22_start(0, vol_ctrl_value >> 7, mute_ctrl_value);
+		i2s_dma_enable = 1;
 		
-		i2s_is_playing = 1;
+		/* @memo ｱﾅﾛｸﾞ段の再始動には時間がかかる可能性がある */
+		/*       よって、その手の遅い領域の制御はI2Sと連動させることにする */
+		/*       (MCLK出てないと問題が出る可能性があるので、ｼｽﾃﾑ初期化時から常時ONにはできない) */
+		cs43l22_start(0, vol_ctrl_value >> 7, 0);
+		
+		/* 既にｱﾅﾛｸﾞ出力開始要求が出ていた場合は、ここで反映 */
+		if (analog_out_enable) start_analog_out();
+		
 	}
 	
 	if (i2s_cmd_queue_wp != i2s_cmd_queue_rp){
@@ -430,9 +458,20 @@ void AUDIO_main(){
 			feed_enable = 1;
 			i2s_cmd_queue_rp = (i2s_cmd_queue_rp + 1) & 0x03;
 		
+		}else if (i2s_cmd_queue[i2s_cmd_queue_rp] == I2S_OP_START_PLAY){
+			
+			analog_out_enable = 1;
+			
+			/* 先にI2Sが始動している必要がある。まだの場合は当該実施時まで遅延 */
+			if (i2s_dma_enable){
+				start_analog_out();
+			}
+			
+			i2s_cmd_queue_rp = (i2s_cmd_queue_rp + 1) & 0x03;
+		
 		}else if (i2s_cmd_queue[i2s_cmd_queue_rp] == I2S_OP_FEED){
 			
-			if (!i2s_is_playing){
+			if (!i2s_dma_enable){
 				/* まだI2Sを始動していない状態 */
 				if (audio_buffer_count >= (AUDIO_BUFFER_SIZE / 4)){
 					/* ﾊﾞｯﾌｧが1/4埋まった。ここでI2S始動 */
@@ -442,9 +481,9 @@ void AUDIO_main(){
 			
 			i2s_cmd_queue_rp = (i2s_cmd_queue_rp + 1) & 0x03;
 			
-		}else if (i2s_cmd_queue[i2s_cmd_queue_rp] == I2S_OP_STOP_REQ){
+		}else if ((i2s_cmd_queue[i2s_cmd_queue_rp] & I2S_OP_MASK_SEQ) == I2S_OP_STOP_REQ){
 			
-			if (!i2s_is_playing){
+			if (!i2s_dma_enable){
 				/* 半ﾊﾞｯﾌｧ長よりも短いﾃﾞｰﾀだけが再生されたﾊﾟﾀｰﾝ */
 				/* 一瞬だけ再生させる */
 				start_i2s();
@@ -452,23 +491,35 @@ void AUDIO_main(){
 			
 			/* 今再生ﾊﾞｯﾌｧに乗っている分の再生が終わるまで待つ */
 			/* @warning 停止処理が完了するまで再生開始を割り込ませたくない。このため、rp位置への上書き扱いで処理を進める */
-			i2s_cmd_queue[i2s_cmd_queue_rp/* @warning */] = I2S_OP_STOP_SYN;
+			i2s_cmd_queue[i2s_cmd_queue_rp/* @warning */]++; // = I2S_OP_STOP_SYN;
 			
-		}else if (i2s_cmd_queue[i2s_cmd_queue_rp] == I2S_OP_STOP_DMA){
+		}else if ((i2s_cmd_queue[i2s_cmd_queue_rp] & I2S_OP_MASK_SEQ) == I2S_OP_STOP){
 			
-			/* 表示反映(@memo ｱﾝﾌﾟの電源制御兼用も考慮: ちょっと早めに行う) */
-			HAL_GPIO_WritePin(GPIOD, LD3_Pin, GPIO_PIN_RESET);
+			/* 実際の停止動作 */
+			if (i2s_cmd_queue[i2s_cmd_queue_rp] & I2S_OP_STOP_F_PLAY){
+				
+				/* 表示反映(@memo ｱﾝﾌﾟの電源制御兼用も考慮: ちょっと早めに行う) */
+				HAL_GPIO_WritePin(GPIOD, LD3_Pin, GPIO_PIN_RESET);
+				
+				/* ﾐｭｰﾄ */
+				cs43l22_set_mute(0);
+				
+				analog_out_enable = 0;
+			}
+			if (i2s_cmd_queue[i2s_cmd_queue_rp] & I2S_OP_STOP_F_DMA){
+				
+				/* 先にｱﾅﾛｸﾞ段の電源を落とす */
+				cs43l22_stop();
+				
+				/* DMA停止 */
+				/* @warning MCLK出力もこのﾀｲﾐﾝｸﾞで停止する */
+				HAL_I2S_DMAStop(&hi2s3);
+				
+				feed_enable = 0;
+				i2s_dma_enable = 0;
+				audio_buffer_init();
 			
-			/* 先にDACﾐｭｰﾄ */
-			cs43l22_stop();
-			
-			/* DMA停止 */
-			/* @warning MCLK出力もこのﾀｲﾐﾝｸﾞで停止する */
-			HAL_I2S_DMAStop(&hi2s3);
-			
-			feed_enable = 0;
-			i2s_is_playing = 0;
-			audio_buffer_init();
+			}
 			
 			/* ここで初めてﾊﾞｯﾌｧ進行 */
 			i2s_cmd_queue_rp = (i2s_cmd_queue_rp + 1) & 0x03;
